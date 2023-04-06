@@ -1,0 +1,33 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: manager-role
+rules:
+- apiGroups:
+  - ssm.secrets.github.io
+  resources:
+  - ssmparams
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ssm.secrets.github.io
+  resources:
+  - ssmparams/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - ssm.secrets.github.io
+  resources:
+  - ssmparams/status
+  verbs:
+  - get
+  - patch
+  - update
