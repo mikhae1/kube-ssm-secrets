@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +34,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
+
+const SSM_ANN_PREFIX = "secret.ssm-parameter"
 
 // SSMParamReconciler reconciles a SSMParam object
 type SSMParamReconciler struct {
@@ -55,7 +59,8 @@ type SSMParamReconciler struct {
 func (r *SSMParamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
 
-	log := log.Log.WithValues("ssmparam", req.NamespacedName)
+	log := log.Log.WithValues(SSM_ANN_PREFIX, req.NamespacedName)
+	log.Info("Reconciling...")
 
 	// Fetch the ServiceAccount or Deployment object
 	var serviceAccount corev1.ServiceAccount
@@ -65,49 +70,76 @@ func (r *SSMParamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Get the SSM parameter value using the AWS SDK for Go
-	ssmParameterPath := serviceAccount.Annotations["ssm.amazonaws.com/parameter"]
-	ssmParameterValue, err := getSSMParameterValue(ssmParameterPath)
-	if err != nil {
-		log.Error(err, "unable to fetch SSM parameter value")
-		return ctrl.Result{}, err
-	}
+	// "secret.ssm-parameter/"
+	for key, value := range serviceAccount.Annotations {
+		if strings.HasPrefix(key, SSM_ANN_PREFIX+"/") {
 
-	// Create or update the Kubernetes Secret with the fetched SSM parameter value
-	secretName := serviceAccount.Name + "-secret"
-	secretNamespace := req.Namespace
-	secretData := map[string]string{
-		"ssm-param-value": ssmParameterValue,
-	}
+			secretName := strings.TrimPrefix(key, SSM_ANN_PREFIX+"/")
+			secretNamespace := req.Namespace
 
-	// Check if the Secret already exists
-	var existingSecret corev1.Secret
-	err = r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: secretNamespace}, &existingSecret)
-	if err != nil && errors.IsNotFound(err) {
-		// Create a new Secret
-		secret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      secretName,
-				Namespace: secretNamespace,
-			},
-			StringData: secretData,
+			secretData := map[string]string{}
+			// Process the annotation value
+			for _, pair := range strings.Split(value, ",") {
+				keyValue := strings.Split(pair, "=")
+				if len(keyValue) == 2 {
+					key := keyValue[0]
+					ssmParameterPath := keyValue[1]
+
+					ssmParameterValue, err := getSSMParameterValue(ssmParameterPath)
+					if err != nil {
+						log.Error(err, "unable to fetch SSM parameter value for: "+pair)
+						return ctrl.Result{}, err
+					}
+					secretData[key] = ssmParameterValue
+				} else if len(keyValue) == 1 {
+					// Assuming the SSM parameter contains a JSON object
+					ssmParameterPath := keyValue[0]
+					ssmParameterValue, err := getSSMParameterValue(ssmParameterPath)
+					if err != nil {
+						log.Error(err, "unable to fetch SSM parameter value")
+						return ctrl.Result{}, err
+					}
+					var jsonData map[string]string
+					if err := json.Unmarshal([]byte(ssmParameterValue), &jsonData); err != nil {
+						log.Error(err, "failed to unmarshal JSON SSM parameter value")
+						return ctrl.Result{}, err
+					}
+					for k, v := range jsonData {
+						secretData[k] = v
+					}
+				}
+			}
+
+			// Check if the Secret already exists
+			var existingSecret corev1.Secret
+			err = r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: secretNamespace}, &existingSecret)
+			if err != nil && errors.IsNotFound(err) {
+				// Create a new Secret
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      secretName,
+						Namespace: secretNamespace,
+					},
+					StringData: secretData,
+				}
+				if err := r.Create(ctx, secret); err != nil {
+					log.Error(err, "failed to create Secret")
+					return ctrl.Result{}, err
+				}
+				log.Info("created Secret", "namespace", secretNamespace, "name", secretName)
+			} else if err == nil {
+				// Update the existing Secret
+				existingSecret.StringData = secretData
+				if err := r.Update(ctx, &existingSecret); err != nil {
+					log.Error(err, "failed to update Secret")
+					return ctrl.Result{}, err
+				}
+				log.Info("updated Secret", "namespace", secretNamespace, "name", secretName)
+			} else {
+				log.Error(err, "failed to get Secret")
+				return ctrl.Result{}, err
+			}
 		}
-		if err := r.Create(ctx, secret); err != nil {
-			log.Error(err, "failed to create Secret")
-			return ctrl.Result{}, err
-		}
-		log.Info("created Secret", "namespace", secretNamespace, "name", secretName)
-	} else if err == nil {
-		// Update the existing Secret
-		existingSecret.StringData = secretData
-		if err := r.Update(ctx, &existingSecret); err != nil {
-			log.Error(err, "failed to update Secret")
-			return ctrl.Result{}, err
-		}
-		log.Info("updated Secret", "namespace", secretNamespace, "name", secretName)
-	} else {
-		log.Error(err, "failed to get Secret")
-		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -115,19 +147,32 @@ func (r *SSMParamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SSMParamReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// return ctrl.NewControllerManagedBy(mgr).
+	// 	For(&corev1.ServiceAccount{}).
+	// 	Complete(r)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.ServiceAccount{}, builder.WithPredicates(serviceAccountPredicate())).
-		// For(&appsv1.Deployment{}, builder.WithPredicates(deploymentPredicate())).
 		Complete(r)
 }
 
+// Reconcile only when the ServiceAccount is updated and has the expected annotation
 func serviceAccountPredicate() predicate.Predicate {
 	return predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool {
-			return e.Object.GetAnnotations()["ssm.amazonaws.com/parameter"] != ""
-		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			return e.ObjectNew.GetAnnotations()["ssm.amazonaws.com/parameter"] != ""
+			for key := range e.ObjectNew.GetAnnotations() {
+				if strings.HasPrefix(key, SSM_ANN_PREFIX) {
+					return true
+				}
+			}
+			return false
+		},
+		CreateFunc: func(e event.CreateEvent) bool {
+			for key := range e.Object.GetAnnotations() {
+				if strings.HasPrefix(key, SSM_ANN_PREFIX) {
+					return true
+				}
+			}
+			return false
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
 			return false
@@ -141,22 +186,5 @@ func serviceAccountPredicate() predicate.Predicate {
 func getSSMParameterValue(ssmParameterPath string) (string, error) {
 	// Implement your logic to fetch the SSM parameter value using the AWS SDK for Go
 	// ...
-	return "A secret", nil
+	return "A secret from: " + ssmParameterPath, nil
 }
-
-// func deploymentPredicate() predicate.Predicate {
-// 	return predicate.Funcs{
-// 		CreateFunc: func(e event.CreateEvent) bool {
-// 			return e.Object.GetAnnotations()["ssm.amazonaws.com/parameter"] != ""
-// 		},
-// 		UpdateFunc: func(e event.UpdateEvent) bool {
-// 			return e.ObjectNew.GetAnnotations()["ssm.amazonaws.com/parameter"] != ""
-// 		},
-// 		DeleteFunc: func(e event.DeleteEvent) bool {
-// 			return false
-// 		},
-// 		GenericFunc: func(e event.GenericEvent) bool {
-// 			return false
-// 		},
-// 	}
-// }

@@ -3,4 +3,12 @@ kind: ServiceAccount
 metadata:
   name: sa-sample
   annotations:
-    ssm.amazonaws.com/parameter: "/path/to/your/ssm/parameter"
+    secret.ssm-parameter/sample-secret1: "username=/path/to/ssm/parameter1,password=/path/to/ssm/parameter2"
+    secret.ssm-parameter/sample-secret2: "db_pass=/path/to/ssm/parameter3"
+    # secret.ssm-parameter/sample-secret3: "/path/to/ssm/json_parameter"
+    ssm-secret.json-parameter/sample-secret: "/path/to/ssm/json-parameter"
+    ssm-secret.parameter-sample-app/username: "/path/to/ssm/parameter"
+    ssm-parameter.sample-app/username: "/path/to/ssm/parameter"
+    ssm.parameter.sample-app/username: "/path/to/ssm/parameter"
+    ssm-my-secret: '{"username": "arn:aws:ssm:us-west-2:123456789012:parameter/username", "password": "arn:aws:ssm:us-west-2:123456789012:parameter/password"}'
+    ssm.parameters: "/path/to/ssm/"
