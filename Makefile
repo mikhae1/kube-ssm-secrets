@@ -1,3 +1,6 @@
+DOCKER_SOCKET := /var/run/docker.sock
+DOCKER := $(shell test -S $(DOCKER_SOCKET) && echo "docker" || (command -v nerdctl 2> /dev/null || echo ""))
+
 env_file := $(cwd)/.env
 
 ifneq ("$(wildcard $(env_file))","")
@@ -79,11 +82,11 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: test ## Build docker image with the manager.
-	docker build -t ${IMG} .
+	$(DOCKER) build -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
-	docker push ${IMG}
+	$(DOCKER) push ${IMG}
 
 # PLATFORMS defines the target platforms for  the manager image be build to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
