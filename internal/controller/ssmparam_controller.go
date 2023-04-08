@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -39,14 +40,18 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/go-logr/logr"
 )
 
 const SSM_ANN_PREFIX = "secret.ssm-parameter"
+const MANAGED_BY = "kube-ssm-secrets"
 
 // SSMParamReconciler reconciles a SSMParam object
 type SSMParamReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme          *runtime.Scheme
+	Log             logr.Logger
+	RefreshInterval time.Duration
 }
 
 //+kubebuilder:rbac:groups=ssm.secrets.github.io,resources=ssmparams,verbs=get;list;watch;create;update;patch;delete
@@ -65,7 +70,7 @@ type SSMParamReconciler struct {
 func (r *SSMParamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
 
-	log := log.Log.WithValues(SSM_ANN_PREFIX, req.NamespacedName)
+	log := r.Log.WithValues(SSM_ANN_PREFIX, req.NamespacedName)
 	log.Info("Reconciling...")
 
 	// Fetch the ServiceAccount or Deployment object
@@ -119,6 +124,11 @@ func (r *SSMParamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			// Check if the Secret already exists
 			var existingSecret corev1.Secret
 			err = r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: secretNamespace}, &existingSecret)
+			if err != nil && !errors.IsNotFound(err) {
+				log.Error(err, "failed to get Secret")
+				return ctrl.Result{}, err
+			}
+
 			if err != nil && errors.IsNotFound(err) {
 				// Create a new Secret
 				secret := &corev1.Secret{
@@ -126,7 +136,7 @@ func (r *SSMParamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 						Name:      secretName,
 						Namespace: secretNamespace,
 						Labels: map[string]string{
-							"app.kubernetes.io/managed-by": "kube-ssm-secrets",
+							"app.kubernetes.io/managed-by": MANAGED_BY,
 						},
 					},
 					StringData: secretData,
@@ -136,22 +146,40 @@ func (r *SSMParamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					return ctrl.Result{}, err
 				}
 				log.Info("created Secret", "namespace", secretNamespace, "name", secretName)
-			} else if err == nil {
-				// Update the existing Secret
-				existingSecret.StringData = secretData
-				if err := r.Update(ctx, &existingSecret); err != nil {
-					log.Error(err, "failed to update Secret")
-					return ctrl.Result{}, err
-				}
-				log.Info("updated Secret", "namespace", secretNamespace, "name", secretName)
 			} else {
-				log.Error(err, "failed to get Secret")
-				return ctrl.Result{}, err
+				// Check if the secret has the required label
+				if existingSecret.Labels["app.kubernetes.io/managed-by"] != MANAGED_BY {
+					log.Error(fmt.Errorf("invalid label app.kubernetes.io/managed-by"),
+						fmt.Sprintf("Secret '%s/%s' exists and it is not managed by kube-ssm-secrets", secretNamespace, secretName))
+					return ctrl.Result{}, fmt.Errorf("secret %s/%s is not managed by kube-ssm-secrets", secretNamespace, secretName)
+				}
+
+				// Check if the secret data should be updated
+				needUpdate := false
+				for key, newValue := range secretData {
+					if existingValue, ok := existingSecret.Data[key]; !ok || string(existingValue) != newValue {
+						needUpdate = true
+						break
+					}
+				}
+
+				// Update the existing Secret
+				if needUpdate {
+					existingSecret.Data = nil // empty the Secret
+					existingSecret.StringData = secretData
+					if err := r.Update(ctx, &existingSecret); err != nil {
+						log.Error(err, "failed to update Secret")
+						return ctrl.Result{}, err
+					}
+					log.Info("updated Secret", "namespace", secretNamespace, "name", secretName)
+				} else {
+					log.Info("Secret is already up-to-date", "namespace", secretNamespace, "name", secretName)
+				}
 			}
 		}
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: r.RefreshInterval}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -189,12 +217,6 @@ func serviceAccountPredicate() predicate.Predicate {
 	}
 }
 
-//	func getSSMParameterValue(ssmParameterPath string) (string, error) {
-//		// Implement your logic to fetch the SSM parameter value using the AWS SDK for Go
-//		// ...
-//		return "A secret from: " + ssmParameterPath, nil
-//	}
-//
 // getSSMParameterValue reads value from AWS SSM Parameter store
 func getSSMParameterValue(ssmParameterPath, awsRegion string) (string, error) {
 	// Init AWS SDK
