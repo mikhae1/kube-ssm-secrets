@@ -18,8 +18,10 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +35,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
 const SSM_ANN_PREFIX = "secret.ssm-parameter"
@@ -85,26 +91,26 @@ func (r *SSMParamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					key := keyValue[0]
 					ssmParameterPath := keyValue[1]
 
-					ssmParameterValue, err := getSSMParameterValue(ssmParameterPath)
+					ssmParameterValue, err := getSSMParameterValue(ssmParameterPath, "")
 					if err != nil {
-						log.Error(err, "unable to fetch SSM parameter value for: "+pair)
+						log.Error(err, "unable to fetch SSM parameter value at: "+pair)
 						return ctrl.Result{}, err
 					}
 					secretData[key] = ssmParameterValue
 				} else if len(keyValue) == 1 {
-					// Assuming the SSM parameter contains a JSON object
+					// Assuming the SSM parameter contains a YAML object
 					ssmParameterPath := keyValue[0]
-					ssmParameterValue, err := getSSMParameterValue(ssmParameterPath)
+					ssmParameterValue, err := getSSMParameterValue(ssmParameterPath, "")
 					if err != nil {
-						log.Error(err, "unable to fetch SSM parameter value")
+						log.Error(err, "unable to fetch SSM parameter value at: "+pair)
 						return ctrl.Result{}, err
 					}
-					var jsonData map[string]string
-					if err := json.Unmarshal([]byte(ssmParameterValue), &jsonData); err != nil {
-						log.Error(err, "failed to unmarshal JSON SSM parameter value")
+					var yamlData map[string]string
+					if err := yaml.Unmarshal([]byte(ssmParameterValue), &yamlData); err != nil {
+						log.Error(err, fmt.Sprintf("failed to unmarshal YAML SSM parameter value for '%s':\n%s\n", pair, ssmParameterValue))
 						return ctrl.Result{}, err
 					}
-					for k, v := range jsonData {
+					for k, v := range yamlData {
 						secretData[k] = v
 					}
 				}
@@ -119,6 +125,9 @@ func (r *SSMParamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      secretName,
 						Namespace: secretNamespace,
+						Labels: map[string]string{
+							"app.kubernetes.io/managed-by": "kube-ssm-secrets",
+						},
 					},
 					StringData: secretData,
 				}
@@ -147,9 +156,6 @@ func (r *SSMParamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SSMParamReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// return ctrl.NewControllerManagedBy(mgr).
-	// 	For(&corev1.ServiceAccount{}).
-	// 	Complete(r)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.ServiceAccount{}, builder.WithPredicates(serviceAccountPredicate())).
 		Complete(r)
@@ -183,8 +189,39 @@ func serviceAccountPredicate() predicate.Predicate {
 	}
 }
 
-func getSSMParameterValue(ssmParameterPath string) (string, error) {
-	// Implement your logic to fetch the SSM parameter value using the AWS SDK for Go
-	// ...
-	return "A secret from: " + ssmParameterPath, nil
+//	func getSSMParameterValue(ssmParameterPath string) (string, error) {
+//		// Implement your logic to fetch the SSM parameter value using the AWS SDK for Go
+//		// ...
+//		return "A secret from: " + ssmParameterPath, nil
+//	}
+//
+// getSSMParameterValue reads value from AWS SSM Parameter store
+func getSSMParameterValue(ssmParameterPath, awsRegion string) (string, error) {
+	// Init AWS SDK
+	var cfg aws.Config
+	var err error
+
+	if awsRegion != "" {
+		cfg, err = config.LoadDefaultConfig(context.Background(), config.WithRegion(awsRegion))
+	} else {
+		cfg, err = config.LoadDefaultConfig(context.Background())
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("unable to load SDK config: %v", err)
+	}
+
+	client := ssm.NewFromConfig(cfg)
+
+	// Get the parameter value from AWS SSM
+	input := &ssm.GetParameterInput{
+		Name:           aws.String(ssmParameterPath),
+		WithDecryption: aws.Bool(true),
+	}
+	output, err := client.GetParameter(context.Background(), input)
+	if err != nil {
+		return "", fmt.Errorf("unable to get SSM parameter value: %v", err)
+	}
+
+	return *output.Parameter.Value, nil
 }

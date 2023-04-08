@@ -1,3 +1,9 @@
+env_file := $(cwd)/.env
+
+ifneq ("$(wildcard $(env_file))","")
+	include $(env_file)
+	export
+endif
 
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest

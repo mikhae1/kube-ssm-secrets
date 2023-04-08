@@ -3,9 +3,10 @@ kind: ServiceAccount
 metadata:
   name: sa-sample
   annotations:
-    secret.ssm-parameter/sample-secret1: "username=/path/to/ssm/parameter1,password=/path/to/ssm/parameter2"
-    secret.ssm-parameter/sample-secret2: "db_pass=/path/to/ssm/parameter3"
-    # secret.ssm-parameter/sample-secret3: "/path/to/ssm/json_parameter"
+    secret.ssm-parameter/sample-secret1: "username=/kube-ssm-secrets/sample,password=/kube-ssm-secrets/sample"
+    secret.ssm-parameter/sample-secret2: "db_pass=/kube-ssm-secrets/sample"
+    secret.ssm-parameter/sample-secret3: "/kube-ssm-secrets/yaml-sample"
+
     ssm-secret.json-parameter/sample-secret: "/path/to/ssm/json-parameter"
     ssm-secret.parameter-sample-app/username: "/path/to/ssm/parameter"
     ssm-parameter.sample-app/username: "/path/to/ssm/parameter"
