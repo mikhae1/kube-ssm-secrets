@@ -58,8 +58,7 @@ type SSMParamReconciler struct {
 //+kubebuilder:rbac:groups=ssm.secrets.github.io,resources=ssmparams/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=ssm.secrets.github.io,resources=ssmparams/finalizers,verbs=update
 //+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;delete
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;delete
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
