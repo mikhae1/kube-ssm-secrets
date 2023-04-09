@@ -1,0 +1,7 @@
+kube-ssm-secrets has been deployed successfully!
+
+In order to begin using ExternalSecrets, you will need to add a ServiceAccount annotations
+(for example, try adding a 'secret.ssm-parameter/my-secret: "password=/kubernetes/secret").
+
+More information on the different types of SecretStores and how to configure them
+can be found in our Github: {{ .Chart.Home }}

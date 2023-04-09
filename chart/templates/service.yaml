@@ -1,0 +1,17 @@
+{{- if or .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    {{- include "kube-ssm-secrets.labels" . | nindent 4 }}
+  name: {{ include "kube-ssm-secrets.fullname" . }}-controller-manager-metrics-service
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+  - name: https
+    port: 8443
+    protocol: TCP
+    targetPort: https
+  selector:
+    control-plane: controller-manager
+{{- end }}

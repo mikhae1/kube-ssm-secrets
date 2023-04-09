@@ -1,7 +1,7 @@
 DOCKER_SOCKET := /var/run/docker.sock
 DOCKER := $(shell test -S $(DOCKER_SOCKET) && echo "docker" || (command -v nerdctl 2> /dev/null || echo ""))
 
-env_file := $(cwd)/.env
+env_file := .env
 
 ifneq ("$(wildcard $(env_file))","")
 	include $(env_file)
@@ -99,10 +99,10 @@ PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 docker-buildx: test ## Build and push docker image for the manager for cross-platform support
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- docker buildx create --name project-v3-builder
+	- $(DOCKER) buildx create --name project-v3-builder
 	docker buildx use project-v3-builder
-	- docker buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- docker buildx rm project-v3-builder
+	- $(DOCKER) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
+	- $(DOCKER) buildx rm project-v3-builder
 	rm Dockerfile.cross
 
 ##@ Deployment
@@ -164,3 +164,10 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	test -s $(LOCALBIN)/setup-envtest || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
+.PHONY: chart-install
+chart-install:
+	helm install kube-ssm-secrets ./chart \
+		--set aws.credentials.accessKey="$(AWS_ACCESS_KEY_ID)" \
+		--set aws.credentials.secretKey="$(AWS_SECRET_ACCESS_KEY)" \
+		--set aws.region="$(AWS_DEFAULT_REGION)"
